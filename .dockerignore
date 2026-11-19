@@ -16,3 +16,16 @@ docker-manifest-unstable.tmpl
 /frontend/node_modules/
 /frontend/.direnv
 /frontend/dist
+
+# Local agent state, credentials and migration backups must never enter builds.
+.agents/
+.private/
+temp/
+TASK_PLAN.html
+plans/
+config.yml
+config.yaml
+**/.env.local
+**/.env.*.local
+frontend/test-results/
+frontend/playwright-report/

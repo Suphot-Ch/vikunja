@@ -1,0 +1,20 @@
+# Build this only from a minimal context containing the tested static binary
+# and the CA bundle plus empty runtime-root/files and tmp directories;
+# do not use the source tree or private staging data as context.
+FROM scratch
+ARG RELEASE_VERSION=2.8.0-primus.1
+ARG SOURCE_REVISION
+LABEL org.opencontainers.image.title="Vikunja Primus" \
+      org.opencontainers.image.source="https://github.com/Suphot-Ch/vikunja" \
+      org.opencontainers.image.version="${RELEASE_VERSION}" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
+      org.opencontainers.image.licenses="AGPL-3.0-or-later"
+COPY --chown=1000:1000 runtime-root /app/vikunja
+WORKDIR /app/vikunja
+COPY --chown=1000:1000 vikunja /app/vikunja/vikunja
+COPY ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --chown=1000:1000 --chmod=1777 tmp /tmp
+USER 1000:1000
+ENV VIKUNJA_SERVICE_ROOTPATH=/app/vikunja/ GODEBUG=multipathtcp=0
+EXPOSE 3456
+ENTRYPOINT ["/app/vikunja/vikunja"]

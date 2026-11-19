@@ -48,11 +48,9 @@ type HTTPError struct {
 	HTTPCode int    `json:"-"`
 	Code     int    `json:"code"`
 	Message  string `json:"message"`
-}
-
-type HTTPErrorWithDetails struct {
-	HTTPError
-	Details interface{} `json:"details"`
+	// I18nParams carries Message's dynamic values, keyed by the client's translation placeholder names, so clients can localise the error.
+	I18nParams map[string]string `json:"i18n_params,omitempty"`
+	Details    any               `json:"details,omitempty"`
 }
 
 // Auth defines the interface used to retrieve authentication information

@@ -3,9 +3,13 @@
 		<div
 			v-for="(r, index) in reminders"
 			:key="index"
-			:data-is-overdue="r.reminder && r.reminder < now || undefined"
+			:data-is-overdue="isOverdue(r) || undefined"
 			class="reminder-input"
 		>
+			<OverdueIndicator
+				v-if="isOverdue(r)"
+				class="reminder-overdue mie-2"
+			/>
 			<ReminderDetail
 				v-model="reminders[index]"
 				class="reminder-detail"
@@ -17,6 +21,7 @@
 			<BaseButton
 				v-if="!disabled"
 				class="remove"
+				:aria-label="$t('task.removeReminder')"
 				@click="removeReminderByIndex(index)"
 			>
 				<Icon icon="times" />
@@ -36,11 +41,14 @@
 <script setup lang="ts">
 import {ref, watch} from 'vue'
 
-import type {ITaskReminder} from '@/modelTypes/ITaskReminder'
+import type {TaskReminder as ITaskReminder} from '@/client/generated'
 import type {IReminderPeriodRelativeTo} from '@/types/IReminderPeriodRelativeTo'
+
+import {parseDateOrNull} from '@/helpers/parseDateOrNull'
 
 import BaseButton from '@/components/base/BaseButton.vue'
 import ReminderDetail from '@/components/tasks/partials/ReminderDetail.vue'
+import OverdueIndicator from '@/components/tasks/partials/OverdueIndicator.vue'
 import {useNow} from '@vueuse/core'
 
 const props = withDefaults(defineProps<{
@@ -63,6 +71,11 @@ const reminders = ref<ITaskReminder[]>([])
 
 const now = useNow({interval: 1000})
 
+function isOverdue(reminder: ITaskReminder): boolean {
+	const date = parseDateOrNull(reminder.reminder)
+	return date !== null && date < now.value
+}
+
 watch(
 	() => props.modelValue,
 	(newVal) => {
@@ -75,8 +88,8 @@ function updateData() {
 	emit('update:modelValue', [...reminders.value])
 }
 
-function addNewReminder(newReminder: ITaskReminder|null) {
-	if (newReminder === null) {
+function addNewReminder(newReminder: ITaskReminder | undefined) {
+	if (!newReminder) {
 		return
 	}
 	reminders.value.push(newReminder)
@@ -94,8 +107,9 @@ function removeReminderByIndex(index: number) {
 	display: flex;
 	align-items: center;
 
-	&[data-is-overdue] :deep(.datepicker .show) {
-		color: var(--danger);
+	&[data-is-overdue] :deep(.datepicker .show),
+	.reminder-overdue {
+		color: var(--danger-text);
 	}
 
 	&:last-child {

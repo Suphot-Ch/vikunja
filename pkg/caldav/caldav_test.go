@@ -91,6 +91,7 @@ END:VCALENDAR`,
 						Description: "Lorem Ipsum",
 						UID:         "randommduid",
 						Timestamp:   time.Unix(1543626724, 0).In(config.GetTimeZone()),
+						Done:        true,
 						Completed:   time.Unix(1543627824, 0).In(config.GetTimeZone()),
 					},
 				},
@@ -465,6 +466,67 @@ LAST-MODIFIED:00010101T000000Z
 END:VTODO
 END:VCALENDAR`,
 		},
+		{
+			name: "not done but with a completion timestamp has STATUS:NEEDS-ACTION",
+			args: args{
+				config: &Config{
+					Name:   "test",
+					ProdID: "RandomProdID which is not random",
+				},
+				todos: []*Todo{
+					{
+						Summary:   "Reopened repeating task",
+						UID:       "reopened-uid",
+						Timestamp: time.Unix(1543626724, 0).In(config.GetTimeZone()),
+						Done:      false,
+						Completed: time.Unix(1543627824, 0).In(config.GetTimeZone()),
+					},
+				},
+			},
+			wantCaldavtasks: `BEGIN:VCALENDAR
+VERSION:2.0
+X-PUBLISHED-TTL:PT4H
+X-WR-CALNAME:test
+PRODID:-//RandomProdID which is not random//EN
+BEGIN:VTODO
+UID:reopened-uid
+DTSTAMP:20181201T011204Z
+SUMMARY:Reopened repeating task
+STATUS:NEEDS-ACTION
+LAST-MODIFIED:00010101T000000Z
+END:VTODO
+END:VCALENDAR`,
+		},
+		{
+			name: "done without a completion timestamp omits COMPLETED",
+			args: args{
+				config: &Config{
+					Name:   "test",
+					ProdID: "RandomProdID which is not random",
+				},
+				todos: []*Todo{
+					{
+						Summary:   "Done task",
+						UID:       "done-uid",
+						Timestamp: time.Unix(1543626724, 0).In(config.GetTimeZone()),
+						Done:      true,
+					},
+				},
+			},
+			wantCaldavtasks: `BEGIN:VCALENDAR
+VERSION:2.0
+X-PUBLISHED-TTL:PT4H
+X-WR-CALNAME:test
+PRODID:-//RandomProdID which is not random//EN
+BEGIN:VTODO
+UID:done-uid
+DTSTAMP:20181201T011204Z
+SUMMARY:Done task
+STATUS:COMPLETED
+LAST-MODIFIED:00010101T000000Z
+END:VTODO
+END:VCALENDAR`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -522,6 +584,26 @@ func TestGetCaldavColor(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 			// No output may ever contain CR or LF inside a property value.
 			assert.NotContains(t, got, "\r")
+		})
+	}
+}
+
+func Test_formatDuration(t *testing.T) {
+	tests := []struct {
+		name string
+		in   time.Duration
+		want string
+	}{
+		{"whole hours", time.Hour, "1H0M0S"},
+		{"hours and minutes", time.Hour + 30*time.Minute, "1H30M0S"},
+		{"minutes only", 30 * time.Minute, "0H30M0S"},
+		{"minutes only, not a round hour", 45 * time.Minute, "0H45M0S"},
+		{"hours, minutes and seconds", 2*time.Hour + 15*time.Minute + 30*time.Second, "2H15M30S"},
+		{"seconds only", 30 * time.Second, "0H0M30S"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, formatDuration(tt.in))
 		})
 	}
 }

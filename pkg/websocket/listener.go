@@ -21,9 +21,11 @@ import (
 
 	"code.vikunja.io/api/pkg/db"
 	"code.vikunja.io/api/pkg/events"
+	"code.vikunja.io/api/pkg/license"
 	"code.vikunja.io/api/pkg/log"
 	"code.vikunja.io/api/pkg/models"
 	"code.vikunja.io/api/pkg/notifications"
+	"code.vikunja.io/api/pkg/user"
 
 	"github.com/ThreeDotsLabs/watermill/message"
 )
@@ -64,6 +66,15 @@ func (n *NotificationListener) Handle(msg *message.Message) error {
 		return nil
 	}
 
+	canRead, err := models.CanReadNotification(s, &user.User{ID: event.UserID}, dbNotification)
+	if err != nil {
+		log.Errorf("WebSocket: failed to check access for notification %d: %v", event.NotificationID, err)
+		return nil
+	}
+	if !canRead {
+		return nil
+	}
+
 	hub.PublishForUser(event.UserID, "notification.created", dbNotification)
 	return nil
 }
@@ -80,6 +91,10 @@ type TimeEntryListener struct {
 func (l *TimeEntryListener) Name() string { return "websocket.push." + l.wsEvent }
 
 func (l *TimeEntryListener) Handle(msg *message.Message) error {
+	if !license.IsFeatureEnabled(license.FeatureTimeTracking) {
+		return nil
+	}
+
 	// All TimeEntry events share the {time_entry, doer} shape; only the entry is needed.
 	var event struct {
 		TimeEntry *models.TimeEntry `json:"time_entry"`
@@ -87,7 +102,7 @@ func (l *TimeEntryListener) Handle(msg *message.Message) error {
 	if err := json.Unmarshal(msg.Payload, &event); err != nil {
 		return err
 	}
-	if event.TimeEntry == nil {
+	if event.TimeEntry == nil || event.TimeEntry.User == nil {
 		return nil
 	}
 
@@ -97,12 +112,36 @@ func (l *TimeEntryListener) Handle(msg *message.Message) error {
 		return nil
 	}
 
-	hub.PublishForUser(event.TimeEntry.UserID, l.wsEvent, event.TimeEntry)
+	hub.PublishForUser(event.TimeEntry.User.ID, l.wsEvent, event.TimeEntry)
 	return nil
 }
 
-// TaskListener broadcasts task create/update/delete events to all users
-// who have access to the affected project.
+type SessionsRevokedListener struct{}
+
+// Name defines the name for the SessionsRevokedListener listener
+func (l *SessionsRevokedListener) Name() string { return "websocket.sessions.revoked" }
+
+// Handle is executed when the event SessionsRevokedListener listens on is fired
+func (l *SessionsRevokedListener) Handle(msg *message.Message) error {
+	var event models.SessionsRevokedEvent
+	if err := json.Unmarshal(msg.Payload, &event); err != nil {
+		return err
+	}
+	hub := GetHub()
+	if hub == nil {
+		return nil
+	}
+	if event.SessionID == "" {
+		hub.DisconnectUser(event.UserID)
+		return nil
+	}
+	hub.DisconnectSession(event.UserID, event.SessionID)
+	return nil
+}
+
+// TaskListener pushes task cache invalidations to users who can still read the
+// affected project. Clients refetch authorized task data instead of receiving
+// task contents or a bucket guessed from one of the project's views.
 type TaskListener struct {
 	wsEvent string
 }
@@ -110,13 +149,17 @@ type TaskListener struct {
 func (l *TaskListener) Name() string { return "websocket.task.push." + l.wsEvent }
 
 func (l *TaskListener) Handle(msg *message.Message) error {
+	if msg == nil {
+		return nil
+	}
+
 	var event struct {
 		Task *models.Task `json:"task"`
 	}
 	if err := json.Unmarshal(msg.Payload, &event); err != nil {
 		return err
 	}
-	if event.Task == nil {
+	if event.Task == nil || event.Task.ID <= 0 || event.Task.ProjectID <= 0 {
 		return nil
 	}
 
@@ -128,29 +171,29 @@ func (l *TaskListener) Handle(msg *message.Message) error {
 	s := db.NewSession()
 	defer s.Close()
 
-	// Populate BucketID if not set
-	if event.Task.BucketID == 0 {
-		var tb struct {
-			BucketID int64 `xorm:"bucket_id"`
-		}
-		has, err := s.Table("task_buckets").
-			Select("bucket_id").
-			Where("task_id = ?", event.Task.ID).
-			Get(&tb)
-		if err == nil && has {
-			event.Task.BucketID = tb.BucketID
-		}
-	}
-
-	// Get all user IDs that have access to this project
+	// Enumerate current candidates, including ancestor owners and shares.
 	userIDs, err := models.GetUserIDsForProject(s, event.Task.ProjectID)
 	if err != nil {
 		log.Errorf("WebSocket: failed to get users for project %d: %v", event.Task.ProjectID, err)
 		return nil
 	}
 
+	payload := struct {
+		ID        int64 `json:"id"`
+		ProjectID int64 `json:"project_id"`
+	}{ID: event.Task.ID, ProjectID: event.Task.ProjectID}
 	for _, userID := range userIDs {
-		hub.PublishForUser(userID, l.wsEvent, event.Task)
+		// The candidate query is not an authorization check. Use canonical
+		// project permissions, not Task.CanRead: deleted tasks no longer exist.
+		project := &models.Project{ID: event.Task.ProjectID}
+		canRead, _, err := project.CanRead(s, &user.User{ID: userID})
+		if err != nil {
+			log.Errorf("WebSocket: failed to check project %d access for user %d: %v", event.Task.ProjectID, userID, err)
+			continue
+		}
+		if canRead {
+			hub.PublishForUser(userID, l.wsEvent, payload)
+		}
 	}
 	return nil
 }
@@ -168,5 +211,7 @@ func RegisterListeners() {
 	// Task realtime sync listeners
 	events.RegisterListener((&models.TaskCreatedEvent{}).Name(), &TaskListener{wsEvent: "task.created"})
 	events.RegisterListener((&models.TaskUpdatedEvent{}).Name(), &TaskListener{wsEvent: "task.updated"})
+	events.RegisterListener((&models.TaskMovedFromProjectEvent{}).Name(), &TaskListener{wsEvent: "task.updated"})
 	events.RegisterListener((&models.TaskDeletedEvent{}).Name(), &TaskListener{wsEvent: "task.deleted"})
+	events.RegisterListener((&models.SessionsRevokedEvent{}).Name(), &SessionsRevokedListener{})
 }

@@ -19,7 +19,10 @@ package openid
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
+	"strings"
+	"sync"
 
 	"code.vikunja.io/api/pkg/config"
 	"code.vikunja.io/api/pkg/log"
@@ -67,6 +70,56 @@ func FindDuplicateIssuers(providerIssuers map[string]string) []ErrDuplicateOIDCI
 	return duplicates
 }
 
+// rawProviderConfigs returns the normalized per-provider config maps, keyed by
+// provider key. Both the outer map and each provider map arrive as
+// map[interface{}]interface{} from YAML configs and as map[string]interface{}
+// from JSON — this handles both. Returns nil when nothing is configured.
+func rawProviderConfigs() map[string]map[string]interface{} {
+	rawProviders := config.AuthOpenIDProviders.Get()
+	if rawProviders == nil {
+		return nil
+	}
+
+	rawProvider, is := rawProviders.(map[string]interface{})
+	if !is {
+		rawProviderInterface, ok := rawProviders.(map[interface{}]interface{})
+		if !ok {
+			log.Criticalf("It looks like your openid configuration is in the wrong format. Please check the docs for the correct format.")
+			return nil
+		}
+		rawProvider = make(map[string]interface{}, len(rawProviderInterface))
+		for k, v := range rawProviderInterface {
+			if key, keyOK := k.(string); keyOK {
+				rawProvider[key] = v
+			}
+		}
+	}
+
+	configs := make(map[string]map[string]interface{}, len(rawProvider))
+	for key, p := range rawProvider {
+		pi, is := p.(map[string]interface{})
+		if !is {
+			pis, pisOK := p.(map[interface{}]interface{})
+			if !pisOK {
+				log.Errorf("Provider %s has invalid configuration format", key)
+				// Keep the key with an empty config so the provider shows up
+				// as configured but unavailable in the healthcheck instead of
+				// silently disappearing.
+				configs[key] = map[string]interface{}{}
+				continue
+			}
+			pi = make(map[string]interface{}, len(pis))
+			for i, s := range pis {
+				if k, keyOK := i.(string); keyOK {
+					pi[k] = s
+				}
+			}
+		}
+		configs[key] = pi
+	}
+	return configs
+}
+
 // GetAllProviders returns all configured providers
 func GetAllProviders() (providers []*Provider, err error) {
 	if !config.AuthOpenIDEnabled.GetBool() {
@@ -76,47 +129,12 @@ func GetAllProviders() (providers []*Provider, err error) {
 	providers = []*Provider{}
 	exists, err := keyvalue.GetWithValue("openid_providers", &providers)
 	if !exists {
-		rawProviders := config.AuthOpenIDProviders.Get()
-		if rawProviders == nil {
+		rawConfigs := rawProviderConfigs()
+		if len(rawConfigs) == 0 {
 			return nil, nil
 		}
 
-		rawProvider, is := rawProviders.(map[string]interface{})
-		if !is {
-			// Try to convert from map[interface{}]interface{} (YAML format)
-			if rawProviderInterface, ok := rawProviders.(map[interface{}]interface{}); ok {
-				rawProvider = make(map[string]interface{}, len(rawProviderInterface))
-				for k, v := range rawProviderInterface {
-					if key, keyOK := k.(string); keyOK {
-						rawProvider[key] = v
-					}
-				}
-			} else {
-				log.Criticalf("It looks like your openid configuration is in the wrong format. Please check the docs for the correct format.")
-				return
-			}
-		}
-
-		for key, p := range rawProvider {
-			var pi map[string]interface{}
-			var is bool
-			pi, is = p.(map[string]interface{})
-			// JSON config is a map[string]interface{}, other providers are not. Under the hood they are all strings so
-			// it is safe to cast.
-			if !is {
-				if pis, pisOK := p.(map[interface{}]interface{}); pisOK {
-					pi = make(map[string]interface{}, len(pis))
-					for i, s := range pis {
-						if key, keyOK := i.(string); keyOK {
-							pi[key] = s
-						}
-					}
-				} else {
-					log.Errorf("Provider %s has invalid configuration format, skipping", key)
-					continue
-				}
-			}
-
+		for key, pi := range rawConfigs {
 			provider, err := getProviderFromMap(pi, key)
 
 			if err != nil {
@@ -130,11 +148,6 @@ func GetAllProviders() (providers []*Provider, err error) {
 			}
 
 			providers = append(providers, provider)
-
-			err = keyvalue.Put("openid_provider_"+key, provider)
-			if err != nil {
-				return nil, err
-			}
 		}
 
 		// Check for duplicate issuers across providers
@@ -151,10 +164,32 @@ func GetAllProviders() (providers []*Provider, err error) {
 			return nil, &duplicates[0]
 		}
 
+		// Persist the per-provider entries only after the duplicate check:
+		// GetProvider resolves them directly, so writing them earlier would
+		// keep a duplicate-issuer provider usable even though the list build
+		// failed and the startup guard would have refused it.
+		for _, provider := range providers {
+			if err := keyvalue.Put("openid_provider_"+provider.Key, provider); err != nil {
+				return nil, err
+			}
+		}
+
 		err = keyvalue.Put("openid_providers", providers)
 	}
 
 	return
+}
+
+// getCachedProviders returns the cached provider list without building it, so
+// callers on a request path never dial providers.
+func getCachedProviders() (providers []*Provider, exists bool) {
+	providers = []*Provider{}
+	exists, err := keyvalue.GetWithValue("openid_providers", &providers)
+	if err != nil {
+		log.Errorf("Could not get cached openid providers: %s", err)
+		return nil, false
+	}
+	return providers, exists
 }
 
 // GetProvider retrieves a provider from keyvalue
@@ -178,6 +213,19 @@ func GetProvider(key string) (provider *Provider, err error) {
 
 	err = provider.setOicdProvider()
 	return
+}
+
+func FindProviderByIssuer(providers []*Provider, issuer string) *Provider {
+	for _, provider := range providers {
+		providerIssuer, err := provider.Issuer()
+		if err != nil {
+			continue
+		}
+		if providerIssuer == issuer {
+			return provider
+		}
+	}
+	return nil
 }
 
 // getCachedProvider returns the provider from keyvalue without re-establishing
@@ -223,6 +271,32 @@ func parseBoolField(pi map[string]interface{}, key string) (val bool, err error)
 	default:
 		return false, fmt.Errorf("expected bool, got %T", raw)
 	}
+}
+
+// Providers are rebuilt on cache cleanup and availability retries; warn once per process.
+var fallbackDeprecationWarned sync.Map
+
+func logFallbackOptionsDeprecation(key string, emailFallback, usernameFallback bool) {
+	var options []string
+	if emailFallback {
+		options = append(options, "emailfallback")
+	}
+	if usernameFallback {
+		options = append(options, "usernamefallback")
+	}
+	if len(options) == 0 {
+		return
+	}
+	if _, warned := fallbackDeprecationWarned.LoadOrStore(key, true); warned {
+		return
+	}
+
+	log.Warningf(
+		"OpenID provider %q has the deprecated option(s) %s enabled. "+
+			"They will be removed in a future release; users must link the provider from their account settings before then.",
+		key,
+		strings.Join(options, ", "),
+	)
 }
 
 func getProviderFromMap(pi map[string]interface{}, key string) (provider *Provider, err error) {
@@ -297,6 +371,7 @@ func getProviderFromMap(pi map[string]interface{}, key string) (provider *Provid
 	if err != nil {
 		log.Errorf("requireavailability is not a boolean for provider %s: %s", key, err)
 	}
+	logFallbackOptionsDeprecation(key, emailFallback, usernameFallback)
 
 	provider = &Provider{
 		Name:                name,
@@ -324,11 +399,14 @@ func getProviderFromMap(pi map[string]interface{}, key string) (provider *Provid
 		return
 	}
 
+	// Discovery returns the OAuth2 endpoints, but not the auth style.
+	endpoint := provider.openIDProvider.Endpoint()
+	endpoint.AuthStyle = provider.discoveredTokenEndpointAuthStyle()
+
 	provider.Oauth2Config = &oauth2.Config{
 		ClientID:     provider.ClientID,
 		ClientSecret: provider.ClientSecret,
-		// Discovery returns the OAuth2 endpoints.
-		Endpoint: provider.openIDProvider.Endpoint(),
+		Endpoint:     endpoint,
 
 		// "openid" is a required scope for OpenID Connect flows.
 		Scopes: []string{oidc.ScopeOpenID, "profile", "email"},
@@ -341,6 +419,56 @@ func getProviderFromMap(pi map[string]interface{}, key string) (provider *Provid
 	return
 }
 
+const (
+	authMethodBasic = "client_secret_basic"
+	authMethodPost  = "client_secret_post"
+)
+
+func authStyleName(style oauth2.AuthStyle) string {
+	switch style {
+	case oauth2.AuthStyleInHeader:
+		return authMethodBasic
+	case oauth2.AuthStyleInParams:
+		return authMethodPost
+	case oauth2.AuthStyleAutoDetect:
+		return "auto"
+	default:
+		return "auto"
+	}
+}
+
+// Fallback preserves autodetection for OIDC providers that omit the discovery field.
+func (p *Provider) discoveredTokenEndpointAuthStyle() oauth2.AuthStyle {
+	if p.openIDProvider == nil {
+		return oauth2.AuthStyleAutoDetect
+	}
+
+	var meta struct {
+		TokenEndpointAuthMethodsSupported []string `json:"token_endpoint_auth_methods_supported"`
+	}
+	if err := p.openIDProvider.Claims(&meta); err != nil {
+		log.Debugf("Could not read token_endpoint_auth_methods_supported for provider %s: %v", p.Key, err)
+		return oauth2.AuthStyleAutoDetect
+	}
+
+	switch {
+	case slices.Contains(meta.TokenEndpointAuthMethodsSupported, authMethodBasic):
+		return oauth2.AuthStyleInHeader
+	case slices.Contains(meta.TokenEndpointAuthMethodsSupported, authMethodPost):
+		return oauth2.AuthStyleInParams
+	default:
+		return oauth2.AuthStyleAutoDetect
+	}
+}
+
+// CleanupSavedOpenIDProviders removes all cached provider state so the next
+// GetAllProviders call rebuilds it from config. The per-provider entries must
+// be removed too: GetProvider resolves them before the provider list, so a
+// stale entry in a persistent keyvalue backend could otherwise keep serving a
+// provider whose initialization currently fails.
 func CleanupSavedOpenIDProviders() {
+	for key := range rawProviderConfigs() {
+		_ = keyvalue.Del("openid_provider_" + key)
+	}
 	_ = keyvalue.Del("openid_providers")
 }

@@ -22,7 +22,7 @@ import (
 )
 
 func (pv *ProjectView) CanRead(s *xorm.Session, a web.Auth) (bool, int, error) {
-	if isInstanceAdmin(s, a) {
+	if isPseudoProjectInstanceAdmin(s, pv.ProjectID, a) {
 		return true, int(PermissionAdmin), nil
 	}
 	filterID := GetSavedFilterIDFromProjectID(pv.ProjectID)
@@ -36,7 +36,7 @@ func (pv *ProjectView) CanRead(s *xorm.Session, a web.Auth) (bool, int, error) {
 }
 
 func (pv *ProjectView) CanDelete(s *xorm.Session, a web.Auth) (bool, error) {
-	if isInstanceAdmin(s, a) {
+	if isPseudoProjectInstanceAdmin(s, pv.ProjectID, a) {
 		return true, nil
 	}
 	filterID := GetSavedFilterIDFromProjectID(pv.ProjectID)
@@ -45,18 +45,27 @@ func (pv *ProjectView) CanDelete(s *xorm.Session, a web.Auth) (bool, error) {
 		return sf.CanDelete(s, a)
 	}
 
+	if _, err := GetProjectViewByIDAndProject(s, pv.ID, pv.ProjectID); err != nil {
+		return false, err
+	}
+
 	pp := pv.getProject()
 	return pp.IsAdmin(s, a)
 }
 
 func (pv *ProjectView) CanUpdate(s *xorm.Session, a web.Auth) (bool, error) {
-	if isInstanceAdmin(s, a) {
+	if isPseudoProjectInstanceAdmin(s, pv.ProjectID, a) {
 		return true, nil
 	}
 	filterID := GetSavedFilterIDFromProjectID(pv.ProjectID)
 	if filterID > 0 {
 		sf := &SavedFilter{ID: filterID}
 		return sf.CanUpdate(s, a)
+	}
+
+	// Reject a view that isn't in the path project before authorizing against it.
+	if _, err := GetProjectViewByIDAndProject(s, pv.ID, pv.ProjectID); err != nil {
+		return false, err
 	}
 
 	pp := pv.getProject()
@@ -64,7 +73,7 @@ func (pv *ProjectView) CanUpdate(s *xorm.Session, a web.Auth) (bool, error) {
 }
 
 func (pv *ProjectView) CanCreate(s *xorm.Session, a web.Auth) (bool, error) {
-	if isInstanceAdmin(s, a) {
+	if isPseudoProjectInstanceAdmin(s, pv.ProjectID, a) {
 		return true, nil
 	}
 	filterID := GetSavedFilterIDFromProjectID(pv.ProjectID)
@@ -75,6 +84,11 @@ func (pv *ProjectView) CanCreate(s *xorm.Session, a web.Auth) (bool, error) {
 
 	pp := pv.getProject()
 	return pp.IsAdmin(s, a)
+}
+
+// Real projects get the instance admin bypass from Project, behind its trash check.
+func isPseudoProjectInstanceAdmin(s *xorm.Session, projectID int64, a web.Auth) bool {
+	return IsPseudoProjectID(projectID) && isInstanceAdmin(s, a)
 }
 
 func (pv *ProjectView) getProject() (pp *Project) {

@@ -25,9 +25,11 @@ import (
 	"time"
 
 	"code.vikunja.io/api/pkg/db"
+	"code.vikunja.io/api/pkg/events"
 	"code.vikunja.io/api/pkg/initialize"
 	"code.vikunja.io/api/pkg/license"
 	"code.vikunja.io/api/pkg/log"
+	"code.vikunja.io/api/pkg/mail"
 	"code.vikunja.io/api/pkg/models"
 	"code.vikunja.io/api/pkg/user"
 
@@ -188,6 +190,12 @@ func getUserFromArg(s *xorm.Session, arg string) *user.User {
 var userCmd = &cobra.Command{
 	Use:   "user",
 	Short: "Manage users locally through the cli.",
+	// Mail sending is async via the queue; without draining it the process would
+	// exit before notification mails (password reset, deletion request, email
+	// confirmation) reach the SMTP server.
+	PersistentPostRun: func(_ *cobra.Command, _ []string) {
+		mail.StopMailDaemon()
+	},
 }
 
 var userListCmd = &cobra.Command{
@@ -258,9 +266,10 @@ var userCreateCmd = &cobra.Command{
 	PreRun: func(_ *cobra.Command, _ []string) {
 		initialize.FullInit()
 	},
-	Run: func(_ *cobra.Command, _ []string) {
+	Run: func(cmd *cobra.Command, _ []string) {
 		s := db.NewSession()
 		defer s.Close()
+		defer events.CleanupPending(s)
 
 		u := &user.User{
 			Username: userFlagUsername,
@@ -287,6 +296,8 @@ var userCreateCmd = &cobra.Command{
 		if err := s.Commit(); err != nil {
 			log.Fatalf("Error saving everything: %s", err)
 		}
+
+		events.DispatchPending(cmd.Context(), s)
 
 		fmt.Printf("\nUser was created successfully.\n")
 	},
@@ -336,15 +347,16 @@ var userResetPasswordCmd = &cobra.Command{
 		initialize.FullInit()
 	},
 	Args: cobra.ExactArgs(1),
-	Run: func(_ *cobra.Command, args []string) {
+	Run: func(cmd *cobra.Command, args []string) {
 		s := db.NewSession()
 		defer s.Close()
+		defer events.CleanupPending(s)
 
 		u := getUserFromArg(s, args[0])
 
 		// By default we reset as usual, only with specific flag directly.
 		if userFlagResetPasswordDirectly {
-			err := user.UpdateUserPassword(s, u, getPasswordFromFlagOrInput())
+			err := models.SetUserPasswordAndInvalidateSessions(s, u, getPasswordFromFlagOrInput())
 			if err != nil {
 				_ = s.Rollback()
 				log.Fatalf("Could not update user password: %s", err)
@@ -362,6 +374,8 @@ var userResetPasswordCmd = &cobra.Command{
 		if err := s.Commit(); err != nil {
 			log.Fatalf("Could not send password reset email: %s", err)
 		}
+
+		events.DispatchPending(cmd.Context(), s)
 	},
 }
 
@@ -372,7 +386,7 @@ var userChangeStatusCmd = &cobra.Command{
 		initialize.FullInit()
 	},
 	Args: cobra.ExactArgs(1),
-	Run: func(_ *cobra.Command, args []string) {
+	Run: func(cmd *cobra.Command, args []string) {
 		s := db.NewSession()
 		defer s.Close()
 
@@ -390,15 +404,16 @@ var userChangeStatusCmd = &cobra.Command{
 				status = user.StatusActive
 			}
 		}
-		err := user.SetUserStatus(s, u, status)
-		if err != nil {
+		if err := models.ChangeUserStatus(s, nil, u, status); err != nil {
 			_ = s.Rollback()
-			log.Fatalf("Could not enable the user")
+			log.Fatalf("Could not change the user status: %s", err)
 		}
 
 		if err := s.Commit(); err != nil {
 			log.Fatalf("Error saving everything: %s", err)
 		}
+
+		events.DispatchPending(cmd.Context(), s)
 
 		fmt.Printf("User status successfully changed, status is now \"%s\"\n", status)
 	},
@@ -412,7 +427,7 @@ var userDeleteCmd = &cobra.Command{
 	PreRun: func(_ *cobra.Command, _ []string) {
 		initialize.FullInit()
 	},
-	Run: func(_ *cobra.Command, args []string) {
+	Run: func(cmd *cobra.Command, args []string) {
 		if userFlagDeleteNow && !userFlagDeleteConfirm {
 			fmt.Println("You requested to delete the user immediately. Are you sure?")
 			fmt.Println(`To confirm, please type "yes, I confirm" in all uppercase:`)
@@ -433,6 +448,7 @@ var userDeleteCmd = &cobra.Command{
 
 		s := db.NewSession()
 		defer s.Close()
+		defer events.CleanupPending(s)
 
 		u := getUserFromArg(s, args[0])
 
@@ -461,6 +477,8 @@ var userDeleteCmd = &cobra.Command{
 		if err := s.Commit(); err != nil {
 			log.Fatalf("Error saving everything: %s", err)
 		}
+
+		events.DispatchPending(cmd.Context(), s)
 
 		if userFlagDeleteNow {
 			fmt.Println("User deleted successfully.")
