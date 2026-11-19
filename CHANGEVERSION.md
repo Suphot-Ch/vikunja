@@ -1,5 +1,10 @@
 # Primus deployment changes
 
+## 2.8.0-ch.1 — 2026-11-19
+
+- Rename the preliminary `2.8.0-primus.1` release identifier to `2.8.0-ch.1` as requested.
+- Align frontend version metadata, backend build version, runtime image version and rollout commands. No application behaviour or database migrations change.
+
 ## 2.8.0-primus.1 — 2026-11-19
 
 - Merge the official Vikunja v2.8.0 release (`6e788bf87cebe50e2b8d034b213fcf94ae5449ee`) while preserving the previously deployed custom task real-time functionality.
