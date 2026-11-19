@@ -159,28 +159,40 @@ export const useKanbanStore = defineStore('kanban', () => {
 		if (buckets.value.length === 0) {
 			return
 		}
-		
-		const {bucketIndex} = getTaskIndicesById(buckets.value, task.id)
-		if (bucketIndex === null) return
-		const currentTaskBucket = buckets.value[bucketIndex]
-		
-		const currentView: IProjectView | undefined = baseStore.currentProject?.views?.find(v => v.id === baseStore.currentProjectViewId)
-		if(typeof currentView === 'undefined') return
-		
-		// If the task is done, make sure it is in the done bucket
-		if (task.done && currentView.doneBucketId !== 0 && currentTaskBucket.id !== currentView.doneBucketId) {
-			moveTaskToBucket(task, currentView.doneBucketId)
+
+		const {bucketIndex: currentBucketIndex, taskIndex} = getTaskIndicesById(buckets.value, task.id)
+
+		// Case 1: Task is not in any bucket in this view
+		if (currentBucketIndex === null || taskIndex === null) {
+			const targetBucketIndex = findIndexById(buckets.value, task.bucketId)
+			if (targetBucketIndex === -1) {
+				return
+			}
+			buckets.value[targetBucketIndex].tasks.push(task)
+			buckets.value[targetBucketIndex].tasks.sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+			buckets.value[targetBucketIndex].count = buckets.value[targetBucketIndex].tasks.length
+			return
 		}
 
-		// If the task is not done but was in the done bucket before, move it to the default bucket
-		if(!task.done && currentView.doneBucketId !== 0 && currentTaskBucket.id === currentView.doneBucketId) {
-			const defaultBucketId = getDefaultBucketId(currentView)
-			moveTaskToBucket(task, defaultBucketId)
+		// Case 2: Task is in a bucket, but the bucket changed (moved between columns)
+		if (buckets.value[currentBucketIndex].id !== task.bucketId) {
+			buckets.value[currentBucketIndex].tasks.splice(taskIndex, 1)
+			buckets.value[currentBucketIndex].count = buckets.value[currentBucketIndex].tasks.length
+
+			const targetBucketIndex = findIndexById(buckets.value, task.bucketId)
+			if (targetBucketIndex !== -1) {
+				buckets.value[targetBucketIndex].tasks.push(task)
+				buckets.value[targetBucketIndex].tasks.sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+				buckets.value[targetBucketIndex].count = buckets.value[targetBucketIndex].tasks.length
+			}
+			return
 		}
-		
-		setTaskInBucket(task)
+
+		// Case 3: Task is in the correct bucket (reordered or edited in the same column)
+		setTaskInBucketByIndex({bucketIndex: currentBucketIndex, taskIndex, task})
+		buckets.value[currentBucketIndex].tasks.sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
 	}
-	
+
 	function moveTaskToBucket(task: ITask, bucketId: IBucket['id']) {
 		const {bucketIndex} = getTaskIndicesById(buckets.value, task.id)
 		if (bucketIndex === null) return
@@ -374,6 +386,21 @@ export const useKanbanStore = defineStore('kanban', () => {
 		}
 	}
 
+
+	function removeTaskFromBuckets(taskId: ITask['id']) {
+		if (buckets.value.length === 0) {
+			return
+		}
+		const {bucketIndex, taskIndex} = getTaskIndicesById(buckets.value, taskId)
+		if (bucketIndex === null || taskIndex === null) {
+			return
+		}
+		buckets.value[bucketIndex].tasks.splice(taskIndex, 1)
+		if (buckets.value[bucketIndex].count > 0) {
+			buckets.value[bucketIndex].count--
+		}
+	}
+
 	return {
 		buckets,
 		isLoading: readonly(isLoading),
@@ -387,6 +414,7 @@ export const useKanbanStore = defineStore('kanban', () => {
 		setTaskInBucket,
 		addTaskToBucket,
 		removeTaskInBucket,
+		removeTaskFromBuckets,
 		moveTaskToBucket,
 		loadBucketsForProject,
 		loadNextTasksForBucket,

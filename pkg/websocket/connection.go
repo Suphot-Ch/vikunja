@@ -267,6 +267,9 @@ var validEvents = map[string]bool{
 	"timer.created":        true,
 	"timer.updated":        true,
 	"timer.deleted":        true,
+	"task.created":         true,
+	"task.updated":         true,
+	"task.deleted":         true,
 }
 
 func isValidEvent(event string) bool {

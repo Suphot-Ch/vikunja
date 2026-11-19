@@ -323,6 +323,7 @@ import {calculateItemPosition} from '@/helpers/calculateItemPosition'
 
 import {isSavedFilter, useSavedFilter} from '@/services/savedFilter'
 import {useTaskDragToProject} from '@/composables/useTaskDragToProject'
+import {useKanbanSync} from '@/composables/useKanbanSync'
 import {success} from '@/message'
 import {useProjectStore} from '@/stores/projects'
 import type {TaskFilterParams} from '@/services/taskCollection'
@@ -358,6 +359,7 @@ const {t} = useI18n({useScope: 'global'})
 
 const baseStore = useBaseStore()
 const kanbanStore = useKanbanStore()
+useKanbanSync()
 const taskStore = useTaskStore()
 const projectStore = useProjectStore()
 const authStore = useAuthStore()

@@ -21,7 +21,6 @@ import (
 
 	"code.vikunja.io/api/pkg/db"
 	"code.vikunja.io/api/pkg/events"
-	"code.vikunja.io/api/pkg/license"
 	"code.vikunja.io/api/pkg/log"
 	"code.vikunja.io/api/pkg/models"
 	"code.vikunja.io/api/pkg/notifications"
@@ -81,10 +80,6 @@ type TimeEntryListener struct {
 func (l *TimeEntryListener) Name() string { return "websocket.push." + l.wsEvent }
 
 func (l *TimeEntryListener) Handle(msg *message.Message) error {
-	if !license.IsFeatureEnabled(license.FeatureTimeTracking) {
-		return nil
-	}
-
 	// All TimeEntry events share the {time_entry, doer} shape; only the entry is needed.
 	var event struct {
 		TimeEntry *models.TimeEntry `json:"time_entry"`
@@ -106,6 +101,60 @@ func (l *TimeEntryListener) Handle(msg *message.Message) error {
 	return nil
 }
 
+// TaskListener broadcasts task create/update/delete events to all users
+// who have access to the affected project.
+type TaskListener struct {
+	wsEvent string
+}
+
+func (l *TaskListener) Name() string { return "websocket.task.push." + l.wsEvent }
+
+func (l *TaskListener) Handle(msg *message.Message) error {
+	var event struct {
+		Task *models.Task `json:"task"`
+	}
+	if err := json.Unmarshal(msg.Payload, &event); err != nil {
+		return err
+	}
+	if event.Task == nil {
+		return nil
+	}
+
+	hub := GetHub()
+	if hub == nil {
+		return nil
+	}
+
+	s := db.NewSession()
+	defer s.Close()
+
+	// Populate BucketID if not set
+	if event.Task.BucketID == 0 {
+		var tb struct {
+			BucketID int64 `xorm:"bucket_id"`
+		}
+		has, err := s.Table("task_buckets").
+			Select("bucket_id").
+			Where("task_id = ?", event.Task.ID).
+			Get(&tb)
+		if err == nil && has {
+			event.Task.BucketID = tb.BucketID
+		}
+	}
+
+	// Get all user IDs that have access to this project
+	userIDs, err := models.GetUserIDsForProject(s, event.Task.ProjectID)
+	if err != nil {
+		log.Errorf("WebSocket: failed to get users for project %d: %v", event.Task.ProjectID, err)
+		return nil
+	}
+
+	for _, userID := range userIDs {
+		hub.PublishForUser(userID, l.wsEvent, event.Task)
+	}
+	return nil
+}
+
 // RegisterListeners registers WebSocket event listeners.
 func RegisterListeners() {
 	events.RegisterListener(
@@ -115,4 +164,9 @@ func RegisterListeners() {
 	events.RegisterListener((&models.TimeEntryCreatedEvent{}).Name(), &TimeEntryListener{wsEvent: "timer.created"})
 	events.RegisterListener((&models.TimeEntryUpdatedEvent{}).Name(), &TimeEntryListener{wsEvent: "timer.updated"})
 	events.RegisterListener((&models.TimeEntryDeletedEvent{}).Name(), &TimeEntryListener{wsEvent: "timer.deleted"})
+
+	// Task realtime sync listeners
+	events.RegisterListener((&models.TaskCreatedEvent{}).Name(), &TaskListener{wsEvent: "task.created"})
+	events.RegisterListener((&models.TaskUpdatedEvent{}).Name(), &TaskListener{wsEvent: "task.updated"})
+	events.RegisterListener((&models.TaskDeletedEvent{}).Name(), &TaskListener{wsEvent: "task.deleted"})
 }
