@@ -117,15 +117,23 @@ function onTokenCreated(token: IApiToken) {
 					>
 						<td>{{ tk.id }}</td>
 						<td>{{ tk.title }}</td>
-						<td class="is-capitalized">
-							<template
-								v-for="(v, p) in tk.permissions"
-								:key="'permission-' + p"
-							>
-								<strong>{{ formatPermissionTitle(p) }}:</strong>
-								{{ (v ?? []).map(formatPermissionTitle).join(', ') }}
-								<br>
-							</template>
+						<td>
+							<details class="token-permissions">
+								<summary>
+									<span class="permissions-show">{{ $t('user.settings.apiTokens.showPermissions') }}</span>
+									<span class="permissions-hide">{{ $t('user.settings.apiTokens.hidePermissions') }}</span>
+								</summary>
+								<div class="permissions-list is-capitalized">
+									<template
+										v-for="(v, p) in tk.permissions"
+										:key="'permission-' + p"
+									>
+										<strong>{{ formatPermissionTitle(p) }}:</strong>
+										{{ (v ?? []).map(formatPermissionTitle).join(', ') }}
+										<br>
+									</template>
+								</div>
+							</details>
 						</td>
 						<td>
 							{{ formatDisplayDate(tk.expires_at) }}
@@ -193,6 +201,41 @@ function onTokenCreated(token: IApiToken) {
 </template>
 
 <style lang="scss" scoped>
+.token-permissions {
+	max-inline-size: min(24rem, 60vw);
+	overflow-wrap: anywhere;
+	white-space: normal;
+
+	summary {
+		padding-block: 0.25rem;
+		cursor: pointer;
+
+		&:focus-visible {
+			outline: 2px solid currentColor;
+			outline-offset: 2px;
+		}
+	}
+
+	.permissions-list {
+		inline-size: min(24rem, 60vw);
+		margin-block-start: 0.5rem;
+	}
+
+	.permissions-hide {
+		display: none;
+	}
+
+	&[open] {
+		.permissions-show {
+			display: none;
+		}
+
+		.permissions-hide {
+			display: inline;
+		}
+	}
+}
+
 .preset-buttons {
 	margin-block-start: 1rem;
 }

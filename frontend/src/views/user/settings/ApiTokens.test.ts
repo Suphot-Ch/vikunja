@@ -8,8 +8,9 @@ import Modal from '@/components/misc/Modal.vue'
 import testid from '@/directives/testid'
 import {VueQueryPlugin, QueryClient} from '@tanstack/vue-query'
 import en from '@/i18n/lang/en.json'
+import type {ApiToken} from '@/client/generated'
 
-const tokens = [
+const tokens: ApiToken[] = [
 	{
 		id: 1,
 		title: 'chrome-quick-add',
@@ -30,7 +31,7 @@ const tokens = [
 
 const SERVER_PER_PAGE = 50
 let stored = tokens.slice()
-const {getAll, del} = vi.hoisted(() => ({
+const {getAll, del, create} = vi.hoisted(() => ({
 	getAll: vi.fn(async ({query}: {query: {page: number}}) => ({data: {
 		items: stored.slice((query.page - 1) * SERVER_PER_PAGE, query.page * SERVER_PER_PAGE),
 		page: query.page,
@@ -42,8 +43,13 @@ const {getAll, del} = vi.hoisted(() => ({
 		stored = stored.filter(token => token.id !== path.id)
 		return {}
 	}),
+	create: vi.fn(),
 }))
-vi.mock('@/client/generated', () => ({tokensList: getAll, tokensDelete: del}))
+vi.mock('@/client/generated', () => ({
+	tokensList: getAll,
+	tokensDelete: del,
+	tokensCreate: create,
+}))
 vi.mock('@/message', () => ({success: vi.fn(), error: vi.fn()}))
 
 const i18n = createI18n({legacy: false, locale: 'en', messages: {en}})
@@ -119,6 +125,7 @@ describe('ApiTokens settings page', () => {
 		setActivePinia(createPinia())
 		document.body.innerHTML = ''
 		del.mockClear()
+		create.mockClear()
 		getAll.mockClear()
 		stored = tokens.slice()
 	})
@@ -128,6 +135,65 @@ describe('ApiTokens settings page', () => {
 		wrapper = undefined
 		vi.unstubAllGlobals()
 		document.body.innerHTML = ''
+	})
+
+	it('keeps permissions in independent, initially collapsed native disclosures without API changes', async () => {
+		stored = [
+			{
+				...tokens[0],
+				permissions: {
+					tasks: ['create', 'read_all'],
+					task_comments: ['read_all', 'update'],
+					projects: null,
+				},
+			},
+			tokens[1],
+		]
+		const originalTokens = JSON.parse(JSON.stringify(stored))
+		const mounted = await mountPage()
+		wrapper = mounted.wrapper
+		const rows = wrapper.findAll('tbody tr')
+		const disclosures = rows.map(row => row.find<HTMLDetailsElement>('td details'))
+		expect(disclosures).toHaveLength(2)
+
+		for (const disclosure of disclosures) {
+			expect(disclosure.exists()).toBe(true)
+			expect(disclosure.element.open).toBe(false)
+			// A shared name would turn the rows into a mutually exclusive accordion.
+			expect(disclosure.attributes('name')).toBeUndefined()
+			expect(disclosure.find('summary .permissions-show').text()).toBe('Show permissions')
+			expect(disclosure.find('summary .permissions-hide').text()).toBe('Hide permissions')
+		}
+
+		const permissionList = disclosures[0].find('.is-capitalized')
+		const originalPermissionText = permissionList.text()
+		expect(permissionList.findAll('strong').map(group => group.text())).toEqual([
+			'tasks:',
+			'task comments:',
+			'projects:',
+		])
+		expect(permissionList.text()).toContain('create, read all')
+		expect(permissionList.text()).toContain('read all, update')
+		expect(permissionList.text()).not.toContain('_')
+		expect(disclosures[1].find('.is-capitalized').text()).toBe('tasks: read all')
+
+		// DOM simulators do not reliably implement native summary activation; the browser verifies keyboard/click behavior.
+		disclosures[0].element.open = true
+		await disclosures[0].trigger('toggle')
+		expect(disclosures[1].element.open).toBe(false)
+		disclosures[1].element.open = true
+		await disclosures[1].trigger('toggle')
+		expect(disclosures[0].element.open).toBe(true)
+		disclosures[0].element.open = false
+		await disclosures[0].trigger('toggle')
+		expect(disclosures[1].element.open).toBe(true)
+		expect(disclosures[0].find('.is-capitalized').text()).toBe(originalPermissionText)
+
+		expect(stored).toEqual(originalTokens)
+		expect(getAll).toHaveBeenCalledTimes(1)
+		expect(del).not.toHaveBeenCalled()
+		expect(create).not.toHaveBeenCalled()
+		expect(runtimeErrorMessages(mounted.errors)).toEqual([])
 	})
 
 	it('deletes a token without crashing while the modal close animation is in flight', async () => {

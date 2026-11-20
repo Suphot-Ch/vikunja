@@ -2,7 +2,7 @@
 # and the CA bundle plus empty runtime-root/files and tmp directories;
 # do not use the source tree or private staging data as context.
 FROM scratch
-ARG RELEASE_VERSION=2.8.0-ch.1
+ARG RELEASE_VERSION=2.8.0-ch.2
 ARG SOURCE_REVISION
 LABEL org.opencontainers.image.title="Vikunja Primus" \
       org.opencontainers.image.source="https://github.com/Suphot-Ch/vikunja" \

@@ -1,4 +1,4 @@
-# Vikunja 2.8.0-ch.1 rollout
+# Vikunja 2.8.0-ch.2 rollout
 
 ## Scope
 
@@ -48,17 +48,17 @@ Build the runtime with Go 1.27 and musl's C toolchain, after a successful fronte
 
 ```sh
 CGO_ENABLED=1 go build -trimpath -tags 'osusergo netgo' \
-  -ldflags '-s -w -linkmode external -extldflags -static -X code.vikunja.io/api/pkg/version.Version=2.8.0-ch.1' \
+  -ldflags '-s -w -linkmode external -extldflags -static -X code.vikunja.io/api/pkg/version.Version=2.8.0-ch.2' \
   -o <minimal-context>/vikunja .
 # Also copy the public system CA bundle and create both
 # <minimal-context>/runtime-root/files/ and <minimal-context>/tmp/.
 docker build -f deployment/Dockerfile.primus-runtime \
-  --build-arg RELEASE_VERSION=2.8.0-ch.1 \
+  --build-arg RELEASE_VERSION=2.8.0-ch.2 \
   --build-arg SOURCE_REVISION="$(git rev-parse HEAD)" \
-  -t local/vikunja:2.8.0-ch.1 <minimal-context>
+  -t local/vikunja:2.8.0-ch.2 <minimal-context>
 ```
 
-The binary should report `2.8.0-ch.1`; save its SHA-256 and the image ID with the verified source commit.
+The binary should report `2.8.0-ch.2`; save its SHA-256 and the image ID with the verified source commit.
 
 ## Migration gate
 

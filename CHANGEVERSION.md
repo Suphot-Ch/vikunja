@@ -1,5 +1,10 @@
 # Primus deployment changes
 
+## 2.8.0-ch.2 — 2026-11-20
+
+- Collapse API-token permissions by default and allow each row to show/hide its full permission list independently, with keyboard-accessible controls and bounded text wrapping.
+- Preserve existing token permissions, token creation/deletion, pagination and all backend/native MCP behaviour. No database migration changes.
+
 ## 2.8.0-ch.1 — 2026-11-19
 
 - Rename the preliminary `2.8.0-primus.1` release identifier to `2.8.0-ch.1` as requested.
